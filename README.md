@@ -45,7 +45,8 @@ APK Input
     │   ├── network       cleartext, trust managers
     │   ├── sensitive     clipboard, contacts, location
     │   ├── smali         root/debug/emu detection
-    │   └── native        .so imports and strings
+    │   ├── native        .so imports and strings
+    │   └── asc           Droid ASC cross-DEX ref search + single-class decompile
     │
     └── 3. Report ─────────────────────────────────────────
         └── REPORT.md    consolidated markdown report
@@ -61,6 +62,7 @@ APK Input
 | `analyze` | Run deep static analysis on decompiled output |
 | `report` | Generate markdown report |
 | `quick` | Fast scan — URLs + secrets only (skips full analysis) |
+| `asc` | Droid ASC — cross-DEX ref search + targeted class decompile |
 | `full` | Run all stages (decompile + analyze + report) |
 | `batch` | Process multiple APKs from directory or list |
 | `check` | Show tool availability status |
@@ -142,6 +144,7 @@ output/
 | [frida](https://frida.re/) | Dynamic instrumentation |
 | [yara](https://virustotal.github.io/yara/) | Pattern matching rules |
 | [androguard](https://github.com/androguard/androguard) | Python APK analysis |
+| [Droid ASC](https://github.com/MG1937/ASC) | Zero-preprocessing cross-DEX ref search + targeted decompile |
 | [aapt](https://developer.android.com/studio/command-line/aapt) | Android asset tool |
 | [ssdeep](https://ssdeep-project.org/) | Fuzzy hashing |
 
@@ -153,3 +156,33 @@ output/
 - Python 3.10+ (androguard, frida-tools)
 
 Run `setup.sh` to install everything: `sudo bash setup.sh`
+
+## ASC Stage
+
+[Droid ASC](https://github.com/MG1937/ASC) adds two O(1)-style primitives to the pipeline — lightning-fast cross-DEX reference search over strings/types/methods/fields, and extraction of a single class into a minimal in-memory DEX for instant decompilation. No full APK inflation, no heavy indexing:
+
+```bash
+# Ref search: who references this string/type/method/field anywhere in the APK
+./apk-pipeline.sh asc refs app.apk string token -o refs.txt
+./apk-pipeline.sh asc refs app.apk type com.poc.Main
+./apk-pipeline.sh asc refs app.apk method onCreate --class com.poc.Main
+
+# Targeted decompile of one class (fastest way to read a single class)
+./apk-pipeline.sh asc class app.apk com.poc.Main -o Main.java
+
+# Availability check
+./apk-pipeline.sh check
+```
+
+Results land under `output/<app>/asc/` (`refs_*.txt` and `classes/*.java`) and are browsable from the TUI — **ASC Search** menu.
+
+Install the engine (auto-detected from `~/ASC`, `<pipeline>/ASC`, or `/opt/ASC`; override with `ASC_DIR` in `config.env`):
+
+```bash
+git clone https://github.com/MG1937/ASC ~/ASC
+pip install -r ~/ASC/requirements.txt
+```
+
+## Credits
+
+Big thanks to **MG193.7 ([@MG1937](https://github.com/MG1937))** for creating **Droid ASC** (https://github.com/MG1937/ASC) — the R8-compiler-as-decompiler-primitive engine behind this pipeline's ASC stage. Its zero-preprocessing, millisecond cross-DEX search and targeted decompile are a great complement to the heavier jadx/apktool inflate-and-index stage. Grateful for the work 🙏

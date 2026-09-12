@@ -103,6 +103,7 @@ Commands:
   report      Generate markdown/HTML report
   quick       Quick scan: URLs + secrets only (decompile + grep)
   apk2url     Extract URLs/endpoints only (fast, no full decompile)
+  asc         ASC fast ref search / targeted class decompile (Droid ASC)
   full        Run full pipeline (decompile + analyze + report)
   batch       Process multiple APKs in parallel
   check       Check tool availability
@@ -174,6 +175,14 @@ check_tools() {
     echo "Python packages:"
     python3 -c "import androguard; print('  ✓ androguard')" 2>/dev/null || echo "  ✗ androguard"
     python3 -c "import frida; print('  ✓ frida')" 2>/dev/null || echo "  ✗ frida"
+
+    # ASC (Droid ASC)
+    echo ""
+    if [ -n "$ASC_MAIN" ] && [ -f "$ASC_MAIN" ]; then
+        printf "%-20s %s%-10s %s\n" "asc" "✓ " "OK" "Droid ASC fast ref search / targeted decompile ($ASC_MAIN)"
+    else
+        printf "%-20s %s%-10s %s\n" "asc" "✗ " "MISSING" "Droid ASC fast ref search (git clone https://github.com/MG1937/ASC ~/ASC)"
+    fi
 }
 
 # ── Banner ─────────────────────────────────────────────
@@ -297,6 +306,9 @@ case "$COMMAND" in
         echo "    Domains file: ${URLS_DIR}/${BASENAME}_domains.txt"
         echo "    IPs file:     ${URLS_DIR}/${BASENAME}_ips.txt"
         echo ""
+        ;;
+    asc)
+        bash "${SCRIPT_DIR}/scripts/asc.sh" "$@"
         ;;
     full)
         APK_FILE="${1:-}"

@@ -552,6 +552,223 @@ delete_output() {
     pause
 }
 
+# ── ASC (Droid ASC) ─────────────────────────────────────
+# Droid ASC by MG193.7 (@MG1937) — https://github.com/MG1937/ASC
+# Fast cross-DEX ref search + targeted single-class decompile.
+
+ASC_APK=""
+ASC_APK_NAME=""
+
+asc_sanitize() { echo "$1" | sed 's/[^A-Za-z0-9._-]/_/g'; }
+
+asc_pick_apk() {
+    local apk_list
+    if [ ${#SELECTED_APKS[@]} -gt 0 ]; then
+        apk_list=$(printf '%s\n' "${SELECTED_APKS[@]}")
+    else
+        apk_list=$(find "${OUTPUT_BASE}" -name "*.apk" -type f 2>/dev/null | sort)
+    fi
+    if [ -z "$apk_list" ]; then
+        err "No APKs found. Pull some first."
+        pause
+        return 1
+    fi
+
+    local chosen
+    chosen=$(echo -e "$apk_list\n Browse custom path\n Back" | fzf --height=40% --reverse --border --prompt="APK> " \
+        --preview="file '{}' 2>/dev/null; echo '---'; sha256sum '{}' 2>/dev/null | cut -c1-16; echo '---'; du -h '{}' 2>/dev/null")
+
+    case "$chosen" in
+        ""|"Back") return 1 ;;
+        "Browse custom path")
+            ASC_APK=$(echo "" | fzf --height=8 --reverse --border --prompt="Full APK path> " --print-query \
+                | tail -1)
+            ;;
+        *)
+            ASC_APK="$chosen"
+            ;;
+    esac
+    ASC_APK_NAME="$(basename "$ASC_APK" .apk)"
+    if [ -z "$ASC_APK" ] || [ ! -f "$ASC_APK" ]; then
+        err "Invalid APK path."
+        pause
+        return 1
+    fi
+    mkdir -p "${OUTPUT_BASE}/${ASC_APK_NAME}/asc/classes"
+    return 0
+}
+
+asc_findrefs() {
+    header
+    echo -e "${BOLD}  ASC — Find References (cross-DEX)${RESET}"
+    echo -e "  ${DIM}APK: ${ASC_APK}${RESET}"
+    echo ""
+
+    if [ -z "$ASC_APK" ] && ! asc_pick_apk; then return; fi
+    header
+    echo -e "${BOLD}  ASC — Find References${RESET}"
+    echo -e "  ${DIM}APK: ${ASC_APK}${RESET}"
+    echo ""
+
+    local ftype clspattern pattern
+    ftype=$(echo -e " string     \${DIM}fuzzy text literal\${RESET}\n type       \${DIM}fuzzy type descriptor\${RESET}\n method     \${DIM}fuzzy method name\${RESET}\n field      \${DIM}fuzzy field name\${RESET}\n Back" | envsubst | fzf --height=12 --reverse --border --prompt="Ref type> " | awk '{print $1}')
+
+    case "$ftype" in
+        ""|"Back"|"Type") return ;;
+    esac
+
+    pattern=$(echo "" | fzf --height=8 --reverse --border --prompt="Pattern> " )
+    [ -z "$pattern" ] && { warn "Empty pattern. Aborted."; pause; return; }
+
+    clspattern=""
+    local extra_args=()
+    for t in method field; do
+        if [ "$ftype" = "$t" ]; then
+            info "Optional class filter for $ftype (enter to skip):"
+            clspattern=$(echo "" | fzf --height=8 --reverse --border --prompt="Class (optional)> ")
+            if [ -n "$clspattern" ]; then
+                extra_args+=(--class "$clspattern")
+                if [[ "$clspattern" == *.* ]] && [[ "$clspattern" != /* ]]; then
+                    extra_args+=(--fuzzy-class)
+                fi
+            fi
+        fi
+    done
+
+    local out_file="${OUTPUT_BASE}/${ASC_APK_NAME}/asc/refs_${ftype}_$(asc_sanitize "$pattern").txt"
+    mkdir -p "$(dirname "$out_file")"
+
+    header
+    msg "Scanning $(basename "$ASC_APK") for $ftype: '$pattern'..."
+    echo ""
+    bash "${SCRIPT_DIR}/scripts/asc.sh" refs "$ASC_APK" "$ftype" "$pattern" \
+        "${extra_args[@]}" -o "$out_file" 2>&1 | while IFS= read -r line; do echo "  $line"; done
+
+    if [ -f "$out_file" ] && [ -s "$out_file" ]; then
+        local count
+        count=$(wc -l < "$out_file")
+        ok "$count reference(s) found. Saved: $out_file"
+        echo ""
+        echo "  (viewing results...)"
+        sleep 1
+        cat "$out_file" | fzf --height=80% --reverse --border --prompt="refs> " \
+            --header="$ftype='$pattern' — ENTER to select, q to exit" \
+            --preview-window=right:55% \
+            --preview="echo '{}'; echo '---'; REF=\$(echo '{}' | grep -oE 'L[^;]*;' | head -1); [ -n \"\$REF\" ] && echo \"Class: \$REF (re-run ASC to decompile)\""
+        [ ${PIPESTATUS[0]} -eq 130 ] 2>/dev/null || true
+    else
+        warn "No references found for $ftype: '$pattern'"
+        [ -f "$out_file" ] && rm -f "$out_file"
+    fi
+    pause
+}
+
+asc_getclass() {
+    header
+    echo -e "${BOLD}  ASC — Decompile One Class${RESET}"
+    echo -e "  ${DIM}APK: ${ASC_APK}${RESET}"
+    echo ""
+    echo -e "  ${DIM}Formats: com.pkg.Class | Lcom/pkg/Class; | fuzzy partial name${RESET}"
+    echo ""
+
+    if [ -z "$ASC_APK" ] && ! asc_pick_apk; then return; fi
+
+    local cls dest
+    cls=$(echo "" | fzf --height=8 --reverse --border --prompt="Class> " )
+    [ -z "$cls" ] && { warn "Empty class. Aborted."; pause; return; }
+
+    dest="${OUTPUT_BASE}/${ASC_APK_NAME}/asc/classes/$(asc_sanitize "$cls").java"
+
+    header
+    msg "Decompiling $cls from $(basename "$ASC_APK")..."
+    echo ""
+    bash "${SCRIPT_DIR}/scripts/asc.sh" class "$ASC_APK" "$cls" -o "$dest" 2>&1 | while IFS= read -r line; do echo "  $line"; done
+
+    if [ -s "$dest" ] && ! grep -q "^Error:" "$dest"; then
+        ok "Decompiled $(( $(wc -l < "$dest") )) lines → $dest"
+        echo ""
+        local view
+        view=$(echo -e "View source\nEdit with \$PAGER\nSkip" | fzf --height=8 --reverse --border --prompt="View> ")
+        case "$view" in
+            "View source")
+                cat "$dest" | fzf --height=85% --reverse --border --prompt="source> " \
+                    --preview-window=right:30% --preview="echo '{}'" || true
+                ;;
+            "Edit with"*)
+                $PAGER "$dest" 2>/dev/null || cat "$dest"
+                ;;
+        esac
+    elif [ -s "$dest" ]; then
+        err "Decompilation issue:"
+        grep -i error "$dest" | head -3 || cat "$dest"
+    else
+        err "Decompilation failed or class not found."
+    fi
+    pause
+}
+
+asc_browse_results() {
+    header
+    echo -e "${BOLD}  ASC — Saved Results Browser${RESET}"
+    echo ""
+
+    local asc_files
+    asc_files=$(find "${OUTPUT_BASE}" -path "*/asc/*" \( -name "*.txt" -o -name "*.java" \) -type f 2>/dev/null | sort)
+    if [ -z "$asc_files" ]; then
+        err "No ASC results saved yet. Run a search or decompile first."
+        pause
+        return
+    fi
+
+    local chosen
+    chosen=$(echo -e "$asc_files\nBack" | fzf --height=60% --reverse --border --prompt="ASC result> " \
+        --preview="echo '{}'; echo '---'; head -10 '{}' 2>/dev/null")
+
+    case "$chosen" in
+        ""|"Back") return ;;
+        *)
+            header
+            echo -e "${BOLD}  ${chosen##*/}${RESET}"
+            echo ""
+            cat "$chosen" | fzf --height=85% --reverse --border --prompt="result> " \
+                --preview-window=right:55% --preview="echo '{}'" || true
+            pause
+            ;;
+    esac
+}
+
+asc_tui() {
+    if [ -z "${ASC_MAIN:-}" ]; then
+        header
+        err "Droid ASC not installed."
+        info "Install: git clone https://github.com/MG1937/ASC ~/ASC"
+        info "         pip install -r ~/ASC/requirements.txt"
+        pause
+        return
+    fi
+
+    header
+    echo -e "${BOLD}  Droid ASC — Fast APK Ref Search & Targeted Decompile${RESET}"
+    echo -e "  ${DIM}by MG193.7 (@MG1937) — https://github.com/MG1937/ASC${RESET}"
+    echo ""
+
+    local action
+    action=$(echo -e "Find References     \${DIM}cross-DEX string/type/method/field search\${RESET}\n Decompile Class     \${DIM}extract one class to .java in ms\${RESET}\n Browse Saved Results\${DIM}view past ASC refs / sources\${RESET}\n Check ASC           \${DIM}verify ASC + androguard\${RESET}\n Back" | envsubst | fzf --height=40% --reverse --border --prompt="> " \
+        --header="Droid ASC — MG193.7" | awk '{print $1}')
+
+    case "$action" in
+        "Find") asc_findrefs ;;
+        "Decompile") asc_getclass ;;
+        "Browse") asc_browse_results ;;
+        "Check")
+            header
+            bash "${SCRIPT_DIR}/scripts/asc.sh" check
+            pause
+            ;;
+        *) return ;;
+    esac
+}
+
 # ── Main Menu ────────────────────────────────────────────
 main_menu() {
     # Check ADB on start
@@ -570,7 +787,7 @@ main_menu() {
         echo ""
 
         local choice
-        choice=$(echo -e " Package Browser   \${DIM}Browse & select APKs from device\${RESET}\n Pull APKs         \${DIM}Download selected packages\${RESET}\n Analyze APK       \${DIM}Run decompile + analysis pipeline\${RESET}\n URL Browser       \${DIM}View extracted URLs & domains\${RESET}\n Analysis Browser  \${DIM}Browse analysis results\${RESET}\n Batch Mode        \${DIM}Process multiple APKs\${RESET}\n Delete Output     \${DIM}Remove pulled APKs / decompile results\${RESET}\n Check Tools       \${DIM}Verify tool availability\${RESET}\n Quit" | envsubst | fzf --height=50% --reverse --border --no-multi --prompt="> " \
+        choice=$(echo -e " Package Browser   \${DIM}Browse & select APKs from device\${RESET}\n Pull APKs         \${DIM}Download selected packages\${RESET}\n Analyze APK       \${DIM}Run decompile + analysis pipeline\${RESET}\n ASC Search        \${DIM}Fast ref search / targeted decompile (Droid ASC)\${RESET}\n URL Browser       \${DIM}View extracted URLs & domains\${RESET}\n Analysis Browser  \${DIM}Browse analysis results\${RESET}\n Batch Mode        \${DIM}Process multiple APKs\${RESET}\n Delete Output     \${DIM}Remove pulled APKs / decompile results\${RESET}\n Check Tools       \${DIM}Verify tool availability\${RESET}\n Quit" | envsubst | fzf --height=50% --reverse --border --no-multi --prompt="> " \
             --header="Use arrow keys or type to filter" | awk '{print $1}')
 
         case "$choice" in
@@ -579,6 +796,7 @@ main_menu() {
             "Analyze")    analyze_apk_tui ;;
             "URL")        url_browser ;;
             "Analysis")   analysis_browser ;;
+            "ASC")        asc_tui ;;
             "Batch")      batch_tui ;;
             "Delete")     delete_output ;;
             "Check")
