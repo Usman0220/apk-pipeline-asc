@@ -358,8 +358,13 @@ if [ "$GENERATE_HTML" = true ]; then
 HTMLHEADER
 
     # Add stats to HTML
+    if [ "$secret_count" -gt 0 ]; then
+        stat_card_class="danger"
+    else
+        stat_card_class="success"
+    fi
     cat >> "$HTML_REPORT" << STATS
-            <div class="stat-card ${secret_count gt 0 && echo 'danger' || echo 'success'}">
+            <div class="stat-card ${stat_card_class}">
                 <h3>Secrets Found</h3>
                 <div class="value">$secret_count</div>
             </div>
